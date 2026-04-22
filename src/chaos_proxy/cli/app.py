@@ -64,7 +64,12 @@ def start(
     typer.echo("")
 
     try:
-        _proxy = ChaosProxy(target_host, target_port, listen_port)
+        _proxy = ChaosProxy(
+            target_host, target_port, listen_port,
+            fixed_delay=delay,
+            min_delay=min_delay,
+            max_delay=max_delay
+        )
         asyncio.run(_run_proxy())
     except KeyboardInterrupt:
         typer.echo("\nОстановка прокси...")

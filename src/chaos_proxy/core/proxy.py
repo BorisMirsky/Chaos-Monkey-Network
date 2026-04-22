@@ -2,16 +2,24 @@ import asyncio
 import logging
 from typing import Optional
 
+from chaos_proxy.chaos import DelayInjector
+
+
+
 logger = logging.getLogger(__name__)
 
 
 class ChaosProxy:
     """Основной класс прокси-сервера"""
 
-    def __init__(self, target_host: str, target_port: int, listen_port: int):
+    def __init__(self, target_host: str, target_port: int, listen_port: int,
+                 fixed_delay: float = 0.0, min_delay: float = 0.0, max_delay: float = 0.0):
         self.target_host = target_host
         self.target_port = target_port
         self.listen_port = listen_port
+        self.fixed_delay = fixed_delay
+        self.min_delay = min_delay
+        self.max_delay = max_delay
         self.server: Optional[asyncio.Server] = None
         self._running = False
         self._active_connections = set()
@@ -100,13 +108,21 @@ class ChaosProxy:
             await client_writer.wait_closed()
             logger.debug(f"Подключение от {client_addr} закрыто")
 
+
     async def _forward_data(
         self,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         direction: str
     ):
-        """Пересылка данных из reader в writer"""
+        """Пересылка данных из reader в writer с возможной задержкой"""
+        # Создаём инжектор задержки для этого направления
+        delay_injector = DelayInjector(
+            fixed_delay=self.fixed_delay,
+            min_delay=self.min_delay,
+            max_delay=self.max_delay
+        )
+        
         try:
             while self._running:
                 # Читаем данные
@@ -117,7 +133,11 @@ class ChaosProxy:
 
                 logger.debug(f"{direction}: получено {len(data)} байт")
 
-                # Отправляем данные (пока без изменений)
+                # Применяем задержку
+                if delay_injector.has_delay():
+                    data = await delay_injector.apply(data, direction)
+
+                # Отправляем данные
                 writer.write(data)
                 await writer.drain()
 
