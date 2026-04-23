@@ -68,7 +68,8 @@ def start(
             target_host, target_port, listen_port,
             fixed_delay=delay,
             min_delay=min_delay,
-            max_delay=max_delay
+            max_delay=max_delay,
+            loss_rate=loss
         )
         asyncio.run(_run_proxy())
     except KeyboardInterrupt:

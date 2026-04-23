@@ -3,7 +3,7 @@ import logging
 from typing import Optional
 
 from chaos_proxy.chaos import DelayInjector
-
+from chaos_proxy.chaos import DelayInjector, PacketLossInjector
 
 
 logger = logging.getLogger(__name__)
@@ -13,13 +13,15 @@ class ChaosProxy:
     """Основной класс прокси-сервера"""
 
     def __init__(self, target_host: str, target_port: int, listen_port: int,
-                 fixed_delay: float = 0.0, min_delay: float = 0.0, max_delay: float = 0.0):
+                 fixed_delay: float = 0.0, min_delay: float = 0.0, max_delay: float = 0.0,
+                 loss_rate: float = 0.0):
         self.target_host = target_host
         self.target_port = target_port
         self.listen_port = listen_port
         self.fixed_delay = fixed_delay
         self.min_delay = min_delay
         self.max_delay = max_delay
+        self.loss_rate = loss_rate
         self.server: Optional[asyncio.Server] = None
         self._running = False
         self._active_connections = set()
@@ -115,13 +117,14 @@ class ChaosProxy:
         writer: asyncio.StreamWriter,
         direction: str
     ):
-        """Пересылка данных из reader в writer с возможной задержкой"""
-        # Создаём инжектор задержки для этого направления
+        """Пересылка данных из reader в writer с задержками и потерями"""
+        # Создаём инжекторы
         delay_injector = DelayInjector(
             fixed_delay=self.fixed_delay,
             min_delay=self.min_delay,
             max_delay=self.max_delay
         )
+        loss_injector = PacketLossInjector(self.loss_rate)
         
         try:
             while self._running:
@@ -132,6 +135,12 @@ class ChaosProxy:
                     break
 
                 logger.debug(f"{direction}: получено {len(data)} байт")
+
+                # Применяем потерю пакетов
+                data = await loss_injector.apply(data, direction)
+                if data is None:
+                    # Пакет потерян, не отправляем
+                    continue
 
                 # Применяем задержку
                 if delay_injector.has_delay():
