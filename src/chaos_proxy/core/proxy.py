@@ -1,9 +1,11 @@
 import asyncio
 import logging
-from typing import Optional
+from typing import Optional, List
 
 from chaos_proxy.chaos import DelayInjector
 from chaos_proxy.chaos import DelayInjector, PacketLossInjector
+from chaos_proxy.chaos import DelayInjector, PacketLossInjector, RuleEngine
+# typing import
 
 
 logger = logging.getLogger(__name__)
@@ -14,7 +16,7 @@ class ChaosProxy:
 
     def __init__(self, target_host: str, target_port: int, listen_port: int,
                  fixed_delay: float = 0.0, min_delay: float = 0.0, max_delay: float = 0.0,
-                 loss_rate: float = 0.0):
+                 loss_rate: float = 0.0, rules: Optional[List] = None):
         self.target_host = target_host
         self.target_port = target_port
         self.listen_port = listen_port
@@ -22,6 +24,7 @@ class ChaosProxy:
         self.min_delay = min_delay
         self.max_delay = max_delay
         self.loss_rate = loss_rate
+        self.rules = rules or []
         self.server: Optional[asyncio.Server] = None
         self._running = False
         self._active_connections = set()
@@ -66,13 +69,18 @@ class ChaosProxy:
             logger.debug(f"Подключение к {self.target_host}:{self.target_port} установлено")
 
             # Создаём задачи для двунаправленной передачи
+            # Получаем порт клиента
+            client_port = client_writer.get_extra_info("peername")[1]
+            
             task_client_to_target = asyncio.create_task(
-                self._forward_data(client_reader, target_writer, "client->target")
+                self._forward_data(client_reader, target_writer, "client->target", client_port)
             )
             task_target_to_client = asyncio.create_task(
-                self._forward_data(target_reader, client_writer, "target->client")
+                self._forward_data(target_reader, client_writer, "target->client", client_port)
             )
-            
+
+
+
             # Добавляем задачи в множество активных
             self._active_connections.add(task_client_to_target)
             self._active_connections.add(task_target_to_client)
@@ -115,9 +123,10 @@ class ChaosProxy:
         self,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
-        direction: str
+        direction: str,
+        client_port: int
     ):
-        """Пересылка данных из reader в writer с задержками и потерями"""
+        """Пересылка данных из reader в writer с задержками и потерями (с поддержкой правил)"""
         # Создаём инжекторы
         delay_injector = DelayInjector(
             fixed_delay=self.fixed_delay,
@@ -125,6 +134,7 @@ class ChaosProxy:
             max_delay=self.max_delay
         )
         loss_injector = PacketLossInjector(self.loss_rate)
+        rule_engine = RuleEngine(self.rules)
         
         try:
             while self._running:
@@ -136,15 +146,24 @@ class ChaosProxy:
 
                 logger.debug(f"{direction}: получено {len(data)} байт")
 
-                # Применяем потерю пакетов
-                data = await loss_injector.apply(data, direction)
-                if data is None:
-                    # Пакет потерян, не отправляем
-                    continue
+                # Проверяем, нужно ли применять хаос
+                should_apply = rule_engine.should_apply_chaos(
+                    data, direction, self.target_port, client_port
+                )
+                
+                if should_apply:
+                    # Применяем потерю пакетов
+                    data = await loss_injector.apply(data, direction)
+                    if data is None:
+                        # Пакет потерян, не отправляем
+                        continue
 
-                # Применяем задержку
-                if delay_injector.has_delay():
-                    data = await delay_injector.apply(data, direction)
+                    # Применяем задержку
+                    if delay_injector.has_delay():
+                        data = await delay_injector.apply(data, direction)
+                else:
+                    # Пакет идёт без изменений (нет задержки, нет потери)
+                    logger.debug(f"{direction}: пакет пропущен без хаоса")
 
                 # Отправляем данные
                 writer.write(data)
