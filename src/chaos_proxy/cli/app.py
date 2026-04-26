@@ -69,7 +69,8 @@ def start(
             fixed_delay=delay,
             min_delay=min_delay,
             max_delay=max_delay,
-            loss_rate=loss
+            loss_rate=loss,
+            enable_stats=True
         )
         asyncio.run(_run_proxy())
     except KeyboardInterrupt:

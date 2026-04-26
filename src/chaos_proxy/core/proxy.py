@@ -5,7 +5,10 @@ from typing import Optional, List
 from chaos_proxy.chaos import DelayInjector
 from chaos_proxy.chaos import DelayInjector, PacketLossInjector
 from chaos_proxy.chaos import DelayInjector, PacketLossInjector, RuleEngine
-# typing import
+from chaos_proxy.stats import StatsCollector, StatsDisplay
+
+
+
 
 
 logger = logging.getLogger(__name__)
@@ -16,7 +19,8 @@ class ChaosProxy:
 
     def __init__(self, target_host: str, target_port: int, listen_port: int,
                  fixed_delay: float = 0.0, min_delay: float = 0.0, max_delay: float = 0.0,
-                 loss_rate: float = 0.0, rules: Optional[List] = None):
+                 loss_rate: float = 0.0, rules: Optional[List] = None,
+                 enable_stats: bool = True):
         self.target_host = target_host
         self.target_port = target_port
         self.listen_port = listen_port
@@ -28,10 +32,15 @@ class ChaosProxy:
         self.server: Optional[asyncio.Server] = None
         self._running = False
         self._active_connections = set()
+        self.enable_stats = enable_stats
+        self.stats_collector = StatsCollector() if enable_stats else None
+        self.stats_display: Optional[StatsDisplay] = None
 
     async def start(self):
         """Запуск прокси-сервера"""
         self._running = True
+        if self.enable_stats and self.stats_display:
+            await self.stats_display.start()
         self.server = await asyncio.start_server(
             self._handle_client,
             host="127.0.0.1",
@@ -43,6 +52,8 @@ class ChaosProxy:
     async def stop(self):
         """Остановка прокси-сервера"""
         self._running = False
+        if self.stats_display:
+            await self.stats_display.stop()
         # Закрываем все активные соединения
         for task in self._active_connections:
             task.cancel()
@@ -126,52 +137,57 @@ class ChaosProxy:
         direction: str,
         client_port: int
     ):
-        """Пересылка данных из reader в writer с задержками и потерями (с поддержкой правил)"""
-        # Создаём инжекторы
+        """Пересылка данных с задержками, потерями и статистикой"""
+        import time
+        
         delay_injector = DelayInjector(
             fixed_delay=self.fixed_delay,
             min_delay=self.min_delay,
             max_delay=self.max_delay
         )
         loss_injector = PacketLossInjector(self.loss_rate)
-        rule_engine = RuleEngine(self.rules)
+        rule_engine = RuleEngine(self.rules) if self.rules else None
         
         try:
             while self._running:
-                # Читаем данные
                 data = await reader.read(4096)
                 if not data:
-                    logger.debug(f"{direction}: соединение закрыто (EOF)")
                     break
 
-                logger.debug(f"{direction}: получено {len(data)} байт")
-
-                # Проверяем, нужно ли применять хаос
-                should_apply = rule_engine.should_apply_chaos(
-                    data, direction, self.target_port, client_port
-                )
+                should_apply = True
+                if rule_engine:
+                    should_apply = rule_engine.should_apply_chaos(
+                        data, direction, self.target_port, client_port
+                    )
+                
+                lost = False
+                delay_applied = 0.0
+                original_size = len(data)
                 
                 if should_apply:
-                    # Применяем потерю пакетов
+                    start_time = time.time()
+                    
+                    # Потеря пакетов
                     data = await loss_injector.apply(data, direction)
                     if data is None:
-                        # Пакет потерян, не отправляем
-                        continue
-
-                    # Применяем задержку
-                    if delay_injector.has_delay():
+                        lost = True
+                    
+                    # Задержка
+                    if data and delay_injector.has_delay():
                         data = await delay_injector.apply(data, direction)
-                else:
-                    # Пакет идёт без изменений (нет задержки, нет потери)
-                    logger.debug(f"{direction}: пакет пропущен без хаоса")
+                    
+                    delay_applied = time.time() - start_time
+                
+                # Запись статистики
+                if self.stats_collector and data is not None:
+                    self.stats_collector.record_packet(
+                        direction, original_size, lost=lost, delay=delay_applied
+                    )
+                
+                # Отправка
+                if data is not None:
+                    writer.write(data)
+                    await writer.drain()
 
-                # Отправляем данные
-                writer.write(data)
-                await writer.drain()
-
-        except ConnectionResetError:
-            logger.debug(f"{direction}: соединение сброшено клиентом")
-        except asyncio.CancelledError:
-            logger.debug(f"{direction}: задача отменена")
         except Exception as e:
-            logger.error(f"{direction}: ошибка {e}")
+            logger.debug(f"{direction}: ошибка {e}")

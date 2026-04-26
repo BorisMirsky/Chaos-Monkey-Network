@@ -17,7 +17,7 @@ class MatchRule:
 
 
 class RuleEngine:
-    """Движок правил для применения хаоса только к определённым пакетам"""
+    """Движок правил для применения chaos только к определённым пакетам"""
 
     def __init__(self, rules: Optional[List[MatchRule]] = None):
         self.rules = rules or []
@@ -35,7 +35,7 @@ class RuleEngine:
     def should_apply_chaos(self, data: bytes, direction: str, 
                             target_port: int, client_port: int) -> bool:
         """
-        Проверить, нужно ли применять хаос к данному пакету.
+        Проверить, нужно ли применять chaos к данному пакету.
         
         Args:
             data: Данные пакета
@@ -44,7 +44,7 @@ class RuleEngine:
             client_port: Порт клиента
         
         Returns:
-            True — хаос нужно применить, False — пропустить без изменений
+            True — chaos нужно применить, False — пропустить без изменений
         """
         # Если нет правил — применяем хаос ко всем пакетам
         if not self.rules:
@@ -97,11 +97,11 @@ class RuleEngine:
 
 # Предустановленные правила для удобства
 class PresetRules:
-    """Набор предустановленных правил для常见 сценариев"""
+    """ Правила для сценариев"""
     
     @staticmethod
     def only_http_requests() -> List[MatchRule]:
-        """Применять хаос только к HTTP запросам (GET, POST, PUT, DELETE)"""
+        """Применять chaos только к HTTP запросам (GET, POST, PUT, DELETE)"""
         return [
             MatchRule(
                 direction="client->target",
@@ -111,7 +111,7 @@ class PresetRules:
     
     @staticmethod
     def only_sql_select() -> List[MatchRule]:
-        """Применять хаос только к SELECT запросам"""
+        """Применять chaos только к SELECT запросам"""
         return [
             MatchRule(
                 direction="client->target",
@@ -122,5 +122,5 @@ class PresetRules:
     
     @staticmethod
     def only_target_port(port: int) -> List[MatchRule]:
-        """Применять хаос только к пакетам на指定 порт"""
+        """Применять chaos только к пакетам на ... порт"""
         return [MatchRule(target_port=port)]
