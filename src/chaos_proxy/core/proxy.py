@@ -29,12 +29,19 @@ class ChaosProxy:
         self.max_delay = max_delay
         self.loss_rate = loss_rate
         self.rules = rules or []
+        self.enable_stats = enable_stats
         self.server: Optional[asyncio.Server] = None
         self._running = False
         self._active_connections = set()
-        self.enable_stats = enable_stats
-        self.stats_collector = StatsCollector() if enable_stats else None
-        self.stats_display: Optional[StatsDisplay] = None
+        
+        # Статистика —顺序 важно: сначала collector, потом display
+        if self.enable_stats:
+            from chaos_proxy.stats import StatsCollector, StatsDisplay
+            self.stats_collector = StatsCollector()
+            self.stats_display = StatsDisplay(self.stats_collector)
+        else:
+            self.stats_collector = None
+            self.stats_display = None
 
     async def start(self):
         """Запуск прокси-сервера"""
@@ -50,19 +57,27 @@ class ChaosProxy:
         await self.server.serve_forever()
 
     async def stop(self):
-        """Остановка прокси-сервера"""
+        """Остановка прокси-сервера (graceful shutdown)"""
+        if not self._running:
+            return
+        
+        logger.info("Остановка прокси...")
         self._running = False
+        
+        # Останавливаем отображение статистики
         if self.stats_display:
             await self.stats_display.stop()
+        
         # Закрываем все активные соединения
-        for task in self._active_connections:
-            task.cancel()
-        if self._active_connections:
-            await asyncio.gather(*self._active_connections, return_exceptions=True)
+        await self._close_all_connections()
+        
+        # Закрываем сервер
         if self.server:
             self.server.close()
             await self.server.wait_closed()
-            logger.info("Прокси остановлен")
+            self.server = None
+        
+        logger.info("Прокси остановлен")
 
     async def _handle_client(self, client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter):
         """Обработка одного клиентского подключения"""
@@ -128,6 +143,17 @@ class ChaosProxy:
             client_writer.close()
             await client_writer.wait_closed()
             logger.debug(f"Подключение от {client_addr} закрыто")
+
+    async def _close_all_connections(self):
+        """Закрыть все активные соединения"""
+        for task in list(self._active_connections):
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self._active_connections.clear()
 
 
     async def _forward_data(

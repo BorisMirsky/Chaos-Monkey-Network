@@ -1,6 +1,7 @@
 import asyncio
-import typer
 import logging
+import signal
+import typer
 from typing import Optional
 
 from chaos_proxy.core import ChaosProxy
@@ -81,9 +82,55 @@ def start(
 
 
 async def _run_proxy():
-    """Запуск прокси в асинхронном режиме"""
+    """Запуск прокси в асинхронном режиме с graceful shutdown"""
     global _proxy
-    await _proxy.start()
+    
+    # Создаём событие для сигнала остановки
+    stop_event = asyncio.Event()
+    
+    # Обработчик Ctrl+C
+    def signal_handler():
+        # Не создаём задачу прямо из обработчика сигнала
+        stop_event.set()
+    
+    async def wait_for_stop():
+        await stop_event.wait()
+        typer.echo("\nПолучен сигнал остановки...")
+        await _proxy.stop()
+    
+    # Регистрируем обработчики сигналов (для Unix)
+    loop = asyncio.get_running_loop()
+    try:
+        loop.add_signal_handler(signal.SIGINT, signal_handler)
+        loop.add_signal_handler(signal.SIGTERM, signal_handler)
+    except NotImplementedError:
+        # Windows: обрабатываем Ctrl+C через asyncio
+        pass
+    
+    # Запускаем прокси
+    proxy_task = asyncio.create_task(_proxy.start())
+    
+    # Ждём сигнала остановки
+    stop_task = asyncio.create_task(wait_for_stop())
+    
+    # Ждём первого завершившегося
+    done, pending = await asyncio.wait(
+        [proxy_task, stop_task],
+        return_when=asyncio.FIRST_COMPLETED
+    )
+    
+    # Отменяем оставшуюся задачу
+    for task in pending:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    
+    # Если прокси ещё работает, останавливаем
+    if not proxy_task.done():
+        await _proxy.stop()
+        await proxy_task
 
 
 @app.command()
